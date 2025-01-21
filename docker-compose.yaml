@@ -1,0 +1,96 @@
+services:
+  spark-iceberg:
+    image: tabulario/spark-iceberg:3.5.1_1.5.0
+    container_name: spark-iceberg
+    networks:
+      - iceberg_net
+    depends_on:
+      - rest
+      - nessie
+    volumes:
+      - ./notebooks:/home/iceberg/notebooks
+      - ./data:/home/iceberg/data
+      - ./conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+      - ./jars/nessie-spark-extensions-3.5_2.12-0.101.3.jar:/opt/spark/jars/nessie-spark-extensions-3.5_2.12-0.101.3.jar
+    ports:
+      - 8888:8888  # Jupyter Notebook
+      - 4041:4041  # Spark UI
+      - 10000:10000  # Spark Thrift Server
+      - 10001:10001  # Spark History Server
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+      - SPARK_SQL_CATALOG_NESSIE_URI=http://nessie:19120/api/v1
+      - SPARK_SQL_CATALOG_NESSIE_WAREHOUSE=s3://warehouse/
+      - SPARK_SQL_CATALOG_NESSIE_REF=main
+      - SPARK_SQL_CATALOG_NESSIE_IO_IMPL=org.apache.iceberg.aws.s3.S3FileIO
+      - SPARK_SQL_CATALOG_NESSIE_S3_ENDPOINT=http://minio:9000
+      - SPARK_SQL_CATALOG_NESSIE_S3_PATH_STYLE_ACCESS=true
+      - SPARK_SQL_CATALOG_NESSIE_CLIENT_REGION=us-east-1
+
+  rest:
+    image: tabulario/iceberg-rest
+    container_name: iceberg-rest
+    networks:
+      - iceberg_net
+    ports:
+      - 8181:8181  # Iceberg REST API
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+      - CATALOG_WAREHOUSE=s3://warehouse/
+      - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
+      - CATALOG_S3_ENDPOINT=http://minio:9000
+      
+  nessie:
+    image: ghcr.io/projectnessie/nessie:0.101.3
+    container_name: nessie
+    ports:
+      - "19120:19120"  # Nessie REST API
+    environment:
+      - QUARKUS_HTTP_PORT=19120
+    networks:
+      - iceberg_net
+
+  minio:
+    image: minio/minio
+    container_name: minio
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password
+      - MINIO_DOMAIN=minio
+    networks:
+      iceberg_net:
+        aliases:
+          - warehouse.minio
+    ports:
+      - 9001:9001
+      - 9000:9000
+    command: ["server", "/data", "--console-address", ":9001"]
+  mc:
+    depends_on:
+      - minio
+    image: minio/mc
+    container_name: mc
+    networks:
+      iceberg_net:
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc config host add minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
+      /usr/bin/mc rm -r --force minio/warehouse;
+      /usr/bin/mc mb minio/warehouse;
+      /usr/bin/mc policy set public minio/warehouse;
+      tail -f /dev/null
+      "
+
+volumes:
+  minio_data:
+
+networks:
+  iceberg_net:
